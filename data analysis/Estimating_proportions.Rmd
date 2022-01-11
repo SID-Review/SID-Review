@@ -1,0 +1,421 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+#Summary proportion for overall proportion and severe infections
+
+# Calling necessary libraries
+```{r, results='hide', message=FALSE, warning=FALSE}
+library("readxl")
+library("ggplot2")
+library(dplyr)
+library(dmetar)
+library(meta)
+library(tidyverse)
+theme_set(theme_bw())
+library("sf")
+library(ggplot2)
+library(metafor)
+library(meta)
+library(dplyr)
+library(tidyr)
+library(caret)
+library(ggplot2)
+library(hrbrthemes)
+library(viridis)
+library(gridExtra)
+library(ggplot2)
+library(grid)
+library(reshape2)
+library(tidyverse)
+library(hrbrthemes)
+library(viridis)
+require(ggpubr)
+require(tidyverse)
+require(Hmisc)
+require(corrplot)
+library(lemon)
+library(FSelector)
+library(kableExtra)
+library(data.table)
+```
+
+
+## Reading the dataset
+
+```{r Reading in data}
+Infection_df <- read_excel("database_trials_totaal_14nov_2021.xlsx")
+```
+
+```{r Changing column names}
+setnames(Infection_df, "Patients_n...21", "n")
+setnames(Infection_df, "Infections_total_n_patients", "total_infection")
+setnames(Infection_df, "SIE_n_patients", "severe_infection")
+```
+
+```{r function to compute the mode}
+getmode <- function(vec) {
+  #function to compute the mode for a 1-D array or vector
+   uniqv <- unique(vec)
+   uniqv[which.max(tabulate(match(vec, uniqv)))]
+}
+```
+
+
+```{r aggregating selected columns by PMID}
+# We aggregated n, pneumonia infection, authors, year, follow-up week, study design, and severe infection by PMID
+data.agg <- Infection_df %>% 
+  group_by(PMID) %>% 
+  summarise(Infection = sum(total_infection, na.rm = TRUE),
+          n = sum(n, na.rm = TRUE) ,
+          Pneumonia_infection = sum(Pneumonia_patients, na.rm = T),
+          Authors = getmode(Author),
+          Year = getmode(Year),
+          Follow_up_weeks = getmode(Follow_up_duration_weeks),
+          studydesign = getmode(Design),            
+          SIE_infection = sum(SIE_min_estimate_patients, na.rm = TRUE))      
+```
+
+
+#Grouping follow-up length into three <=12 weeks, 13 - 26 weeks, and >26 weeks 
+```{r recoding follow-up weeks}
+#Grouping follow-up week
+followup.length.group <- NULL
+for ( i in seq(1,dim(Infection_df)[1], by=1)){
+  if(Infection_df$Follow_up_duration_weeks[i] <= 12){followup.length.group <- append(followup.length.group, "<=12 weeks" )}
+  
+  if(Infection_df$Follow_up_duration_weeks[i] > 12 & Infection_df$Follow_up_duration_weeks[i] <= 26) {followup.length.group <- append(followup.length.group,  "13 - 26 weeks")}
+  
+  if(Infection_df$Follow_up_duration_weeks[i] > 26 & Infection_df$Follow_up_duration_weeks[i] != 999){followup.length.group <- append(followup.length.group,">26 weeks")}
+  
+  if(Infection_df$Follow_up_duration_weeks[i] == 999){followup.length.group <- append(followup.length.group,"NaN")}
+}
+```
+
+```{r adding follow-up group to the dataframe}
+#adding grouped follow up length to the existing data frame
+Infection_df$followup.length.group <- followup.length.group
+```
+
+
+```{r combinig follow-up period and study design }
+design_followup <- paste0(Infection_df$Design, Infection_df$followup.length.group)
+Infection_df$design_followup <- design_followup
+```
+
+
+#Overall proportion
+```{r removing rows with missing proportion - overall proportion}
+#In the dataset 999 was put to indicate missing values in overall infection and severe infection 
+Infection_df_overall <- copy(Infection_df)
+Infection_df_overall$P <- Infection_df_overall$total_infection/Infection_df_overall$n
+Infection_df_overall <- Infection_df_overall[!is.na(Infection_df_overall$P) & (Infection_df_overall$P  < 1) ,]
+Infection_df_overall <- Infection_df_overall[Infection_df_overall$total_infection != 999,]
+
+```
+
+```{r computing the overall proportion}
+#Computing the proportion for overall infection 
+overall.logit <- escalc(xi=total_infection, ni=n, measure="PLO", data=Infection_df_overall)
+overall.rma <- rma(yi,vi,data=overall.logit,method="REML", weighted=TRUE)
+overall.prop.pre <-  predict(overall.rma, transf=transf.ilogit)
+```
+
+
+```{r printing the computed summary proportion, confidence interval, and heterogeneity }
+#Print summary proportion and heterogeneity information
+summary(overall.rma);print(overall.prop.pre)
+```
+
+
+#Serious infection
+```{r removing rows with missing proportion - overall proportion}
+#missing values in the serious infection are represented by 999 
+Infection_df.severe <- copy(Infection_df)
+Infection_df.severe$P_severe <- Infection_df.severe$severe_infection/Infection_df.severe$n
+Infection_df.complete.severe <- Infection_df.severe[!is.na(Infection_df.severe$P_severe) & (Infection_df.severe$P_severe  < 1),]
+ Infection_df.complete.severe <- Infection_df.complete.severe[as.integer(Infection_df.complete.severe$severe_infection) != 999,]
+```
+
+```{r computing severe infection proportion and heterogeneity indicators}
+#Computing the proportion for overall infection
+severe.logit <- escalc(xi=severe_infection, ni=n, measure="PLO", data=Infection_df.complete.severe)
+severe.rma <- rma(yi,vi,data=severe.logit,method="REML", weighted=TRUE)
+severe.prop.pre <- predict(severe.rma,transf=transf.ilogit)
+```
+
+```{r printing summary proportion and heterogeneity}
+#printing the estimated proportion and rma(heterogeneity information)
+print(severe.rma);print(severe.prop.pre)
+```
+
+
+#Forest plot overall infection
+
+```{r randomly taking 50 studies for forest plot - severe infection}
+#Preparing data for forest plot by taking 50 samples and sorting them
+data.agg$p <- data.agg$Infection/data.agg$n
+overall.agg.forest <- data.agg[between(data.agg$p,0,1),]
+overall.agg.forest <- overall.agg.forest[sample(nrow(overall.agg.forest), 50), ]
+overall.agg.forest <- overall.agg.forest[order(overall.agg.forest$p),]
+```
+
+
+```{r computing heterogeneity indicator for the forest plot}
+#Computing the proportion for overall infection
+overall.forest.logit <- escalc(xi=Infection, ni=n, measure="PLO", data=overall.agg.forest)
+overall.forest.rma <- rma(yi,vi,data=overall.forest.logit,method="REML", weighted=TRUE)
+#overall.forest.prop.pre <- predict(overall.forest.rma,transf=transf.ilogit)
+```
+
+
+
+```{r making forest plot for overall proportion}
+overall.forest.summary=metaprop(as.integer(Infection),
+                     n,
+                     PMID,
+                     data=overall.agg.forest,
+                     #byvar=studydesign,
+                     sm="PRAW",
+                     method.ci="NAsm",
+                     method.tau="DL",
+                     incr=0.5,
+                     allincr=FALSE,
+                     addincr=FALSE,
+                     tau.common=TRUE,
+                     tau.preset=sqrt(overall.forest.rma$tau2),
+                     title="")
+png("Overall_Forestplotmeta.png",width=1000,height=1000)
+forest(overall.forest.summary,
+       xlim = c(0,1), pscale =1, 
+       rightcols=c("effect", "ci"),
+       rightlabs=c("Proportion", "95% C.I."),
+       leftcols = c("studlab", "event", "n"), 
+       leftlabs = c("Study(PMID)", "Cases", "Total"),
+       xlab = "Prevalence", 
+       fs.xlab=12,
+       fs.study=12,
+       fs.study.lables=12,
+       fs.heading=12,
+       squaresize = 0.5, col.square="navy", col.square.lines="navy",
+       col.diamond="navy", col.diamond.lines="navy",
+       comb.fixed=FALSE,
+       lty.fixed=0,
+       lty.random=2, 
+       type.study="square",
+       type.random="diamond",
+       ff.fixed="bold.italic",
+       ff.random="bold.italic",
+       hetlab = "Heterogeneity:",
+       fs.hetstat=10,
+       smlab="",
+       print.Q=TRUE,
+       print.pval.Q=TRUE,
+       print.I2=TRUE,
+       print.tau2=FALSE,
+       col.by="grey",
+       digits=4)
+dev.off()
+```
+
+#Forest plot for Severe infection
+
+```{r randomly taking 50 studies for forest plot - severe infection}
+#Preparing data for forest plot by taking 50 samples and sorting them
+data.agg$p_severe <- data.agg$SIE_infection/data.agg$n
+severe.agg.forest <- data.agg[between(data.agg$p_severe,0,1),]
+severe.agg.forest <- severe.agg.forest[sample(nrow(severe.agg.forest), 50), ]
+severe.agg.forest <- severe.agg.forest[order(severe.agg.forest$p),]
+```
+
+
+```{r}
+#Computing the proportion for severe infection
+severe.forest.logit <- escalc(xi=SIE_infection, ni=n, measure="PLO", data=severe.agg.forest)
+severe.forest.rma <- rma(yi,vi,data=severe.forest.logit,method="REML", weighted=TRUE)
+#overall.forest.prop.pre <- predict(overall.forest.rma,transf=transf.ilogit)
+```
+
+
+```{r making forest plot for severe infection}
+severe.forest.summary <- metaprop(as.integer(SIE_infection),
+                     n,
+                     PMID,
+                     data=severe.agg.forest,
+                     #byvar=studydesign,
+                     sm="PRAW",
+                     method.ci="NAsm",
+                     method.tau="DL",
+                     incr=0.5,
+                     allincr=FALSE,
+                     addincr=FALSE,
+                     tau.common=TRUE,
+                     tau.preset=sqrt(severe.forest.rma$tau2),
+                     title="")
+png("Severe_Forestplotmeta.png",width=1000,height=1000)
+forest(severe.forest.summary,
+       xlim = c(0,1), pscale =1, 
+       rightcols=c("effect", "ci"),
+       rightlabs=c("Proportion", "95% C.I."),
+       leftcols = c("studlab", "event", "n"), 
+       leftlabs = c("Study(PMID)", "Cases", "Total"),
+       xlab = "Prevalence", 
+       fs.xlab=12,
+       fs.study=12,
+       fs.study.lables=12,
+       fs.heading=12,
+       squaresize = 0.5, col.square="navy", col.square.lines="navy",
+       col.diamond="navy", col.diamond.lines="navy",
+       comb.fixed=FALSE,
+       lty.fixed=0,
+       lty.random=2, 
+       type.study="square",
+       type.random="diamond",
+       ff.fixed="bold.italic",
+       ff.random="bold.italic",
+       hetlab = "Heterogeneity:",
+       fs.hetstat=10,
+       smlab="",
+       print.Q=TRUE,
+       print.pval.Q=TRUE,
+       print.I2=TRUE,
+       print.tau2=FALSE,
+       col.by="grey",
+       digits=4)
+dev.off()
+```
+
+
+#Comparing the infection rate by follow up groups
+
+```{r computing overall proportion by study design group}
+metaprop(as.integer(total_infection),
+                     n,
+                     PMID,
+                     data=Infection_df_overall,
+                     byvar=followup.length.group,
+                     sm="PRAW",
+                     method.ci="NAsm",
+                     method.tau="DL",
+                     incr=0.5,
+                     allincr=FALSE,
+                     addincr=FALSE,
+                     tau.common=FALSE,
+                     tau.preset=sqrt(overall.rma$tau2),
+                     title="")
+```
+
+
+#Comparing the infection rate by follow up groups(for severe infection)
+
+```{r comparing severe infection by study design group}
+metaprop(as.integer(severe_infection),
+                     n,
+                     PMID,
+                     data=Infection_df.complete.severe,
+                     byvar=followup.length.group,
+                     sm="PRAW",
+                     method.ci="NAsm",
+                     method.tau="DL",
+                     incr=0.5,
+                     allincr=FALSE,
+                     addincr=FALSE,
+                     tau.common=FALSE,
+                     tau.preset=sqrt(severe.rma$tau2),
+                     title="")
+```
+
+
+#overall proportion by study designs
+```{r computing overall proportion by study design}
+prop.design.overall <- metaprop(as.integer(total_infection),
+                     n,
+                     PMID,
+                     data=Infection_df_overall,
+                     byvar=Design,
+                     sm="PRAW",
+                     method.ci="NAsm",
+                     method.tau="DL",
+                     incr=0.5,
+                     allincr=FALSE,
+                     addincr=FALSE,
+                     tau.common=FALSE,
+                     tau.preset=sqrt(all.rma$tau2),
+                     title="")
+prop.design.overall
+```
+
+
+# Severe infection by study design
+```{r}
+prop.design.severe <- metaprop(as.integer(severe_infection),
+                     n,
+                     PMID,
+                     data=Infection_df.complete.severe,
+                     byvar=Design,
+                     sm="PRAW",
+                     method.ci="NAsm",
+                     method.tau="DL",
+                     incr=0.5,
+                     allincr=FALSE,
+                     addincr=FALSE,
+                     tau.common=FALSE,
+                     tau.preset=sqrt(overall.rma$tau2),
+                     title="")
+prop.design.severe
+```
+
+
+
+#overall proportion by design and follow-up group 
+```{r computing overall proportion by design and follow-up group}
+prop.design_followup.overall <- metaprop(as.integer(total_infection),
+                     n,
+                     PMID,
+                     data=Infection_df_overall,
+                     byvar=design_followup,
+                     sm="PRAW",
+                     method.ci="NAsm",
+                     method.tau="DL",
+                     incr=0.5,
+                     allincr=FALSE,
+                     addincr=FALSE,
+                     tau.common=FALSE,
+                     tau.preset=sqrt(all.rma$tau2),
+                     title="")
+prop.design_followup.overall
+
+```
+
+
+#Severe infection by design and follow-up group
+```{r}
+prop.design_followup.severe <- metaprop(as.integer(severe_infection),
+                     n,
+                     PMID,
+                     data=Infection_df.complete.severe,
+                     byvar=design_followup,
+                     sm="PRAW",
+                     method.ci="NAsm",
+                     method.tau="DL",
+                     incr=0.5,
+                     allincr=FALSE,
+                     addincr=FALSE,
+                     tau.common=FALSE,
+                     tau.preset=sqrt(severe.rma$tau2),
+                     title="")
+prop.design_followup.severe
+
+```
+
+
+
+
+
+
+
+
+

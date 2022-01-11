@@ -1,0 +1,207 @@
+---
+title: "All infection types"
+
+date: "1/5/2022"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(writexl)
+library(readxl)
+library(dplyr)
+library(dmetar)
+library(meta)
+library(tidyverse)
+library(ggplot2)
+library(metafor)
+library(meta)
+library(reshape2)
+theme_set(theme_bw())
+```
+
+
+## Reading the dataset
+
+```{r Reading in data}
+Infection_df <- read_excel("database_trials_totaal_14nov_2021.xlsx")
+```
+
+```{r Changing column names}
+setnames(Infection_df, "Patients_n...21", "n")
+setnames(Infection_df, "Infections_total_n_patients", "total_infection")
+setnames(Infection_df, "SIE_n_patients", "severe_infection")
+```
+
+```{r function to compute the mode}
+getmode <- function(vec) {
+  #function to compute the mode for a 1-D array or vector
+   uniqv <- unique(vec)
+   uniqv[which.max(tabulate(match(vec, uniqv)))]
+}
+```
+
+
+```{r aggregating selected columns by PMID}
+# We aggregated n, pneumonia infection, authors, year, follow-up week, study design, and severe infection by PMID
+data.agg <- Infection_df %>% 
+  group_by(PMID) %>% 
+  summarise(Infection = sum(total_infection, na.rm = TRUE),
+          n = sum(n, na.rm = TRUE) ,
+          Pneumonia_infection = sum(Pneumonia_patients, na.rm = T),
+          Authors = getmode(Author),
+          Year = getmode(Year),
+          Follow_up_weeks = getmode(Follow_up_duration_weeks),
+          studydesign = getmode(Design),            
+          SIE_infection = sum(SIE_min_estimate_patients, na.rm = TRUE))      
+```
+
+
+#Grouping follow-up length into three <=12 weeks, 13 - 26 weeks, and >26 weeks 
+```{r recoding follow-up weeks}
+#Grouping follow-up week
+followup.length.group <- NULL
+for ( i in seq(1,dim(Infection_df)[1], by=1)){
+  if(Infection_df$Follow_up_duration_weeks[i] <= 12){followup.length.group <- append(followup.length.group, "<=12 weeks" )}
+  
+  if(Infection_df$Follow_up_duration_weeks[i] > 12 & Infection_df$Follow_up_duration_weeks[i] <= 26) {followup.length.group <- append(followup.length.group,  "13 - 26 weeks")}
+  
+  if(Infection_df$Follow_up_duration_weeks[i] > 26 & Infection_df$Follow_up_duration_weeks[i] != 999){followup.length.group <- append(followup.length.group,">26 weeks")}
+  
+  if(Infection_df$Follow_up_duration_weeks[i] == 999){followup.length.group <- append(followup.length.group,"NaN")}
+}
+```
+
+```{r adding follow-up group to the dataframe}
+#adding grouped follow up length to the existing data frame
+Infection_df$followup.length.group <- followup.length.group
+```
+
+
+```{r combinig follow-up period and study design }
+design_followup <- paste0(Infection_df$Design, Infection_df$followup.length.group)
+Infection_df$design_followup <- design_followup
+```
+
+
+#Overall proportion
+```{r removing rows with missing proportion - overall proportion}
+#In the dataset 999 was put to indicate missing values in overall infection and severe infection 
+Infection_df_overall <- copy(Infection_df)
+Infection_df_overall$P <- Infection_df_overall$total_infection/Infection_df_overall$n
+Infection_df_overall <- Infection_df_overall[!is.na(Infection_df_overall$P) & (Infection_df_overall$P  < 1) ,]
+Infection_df_overall <- Infection_df_overall[Infection_df_overall$total_infection != 999,]
+
+```
+
+```{r computing the overall proportion}
+#Computing the proportion for overall infection 
+overall.logit <- escalc(xi=total_infection, ni=n, measure="PLO", data=Infection_df_overall)
+overall.rma <- rma(yi,vi,data=overall.logit,method="REML", weighted=TRUE)
+overall.prop.pre <-  predict(overall.rma, transf=transf.ilogit)
+```
+
+
+```{r}
+sex_ratio <- all_inf_df$Females_n/all_inf_df$Males_n
+all_inf_df$sex_ratio <- sex_ratio
+```
+
+
+```{r computing proportion and heterogeneity}
+inf_temp <- NULL
+columns <- NULL
+rows <- NULL
+groups <- NULL# combination of followup length and study design
+for (j in unique(all_inf_df$design_followup)){
+for (i in 62:dim(all_inf_df)[2]-2){
+  temp_df = all_inf_df[!is.na(all_inf_df[,i]),]
+  temp_df = temp_df[temp_df$design_followup==j,]
+  temp_df$p_temp <- temp_df[,i]/temp_df$n
+  temp_df = temp_df[temp_df$p_temp <=1 & temp_df$p_temp >=0,]
+  if( sum(complete.cases(temp_df[,i]))<8){next}
+ 
+temp.logit = escalc(xi=unlist(temp_df[,i]), ni=n, measure="PLO", data=temp_df)
+temp.rma = rma(yi,vi,data=temp.logit,  method="DL", weighted=TRUE)
+temp.prop.pre = predict(temp.rma,transf=transf.ilogit)
+
+groups <- append(groups, j)
+rows <- append(rows, colnames(temp_df)[i])
+inf_temp <- rbind(inf_temp, round(c(temp.prop.pre$pred, temp.prop.pre$ci.lb, temp.prop.pre$ci.ub, temp.rma$QEp,
+                                    temp.rma$k),4))
+}}
+```
+
+```{r adding column names and exporting data}
+inf_temp <- as.data.frame(cbind(rows, groups, inf_temp))
+colnames(inf_temp) <- c("P", "LB", "UB", "Het-test", "n")
+write_xlsx(inf_temp,"inf_temp.xlsx")
+```
+
+#Meta-regression for each infection
+```{r list of moderators to be considered}
+moderators <- c("Biological_class", "Biological_target", "sex_ratio", "Follow_up_duration_weeks",  "Males_n", "Females_n", "Age_mean...16", "BMI_kg_m2_mean",  "CRP_mg_L_mean...22", "RA_duration_mean_yrs",  "Rheumatoid_factor_positive_pct",  "MTX_pct", "MTX_dose_mg_week_mean", "Corticosteroids_pct", "Cort_dose_mg_day_mean", "No_of_prior_DMARDS_mean",          "previous_bDMARD_use_pct", "Previous_bDMARD_mean")      
+```
+
+```{r selecting study design and follow-up group}
+#"RCT>26 weeks", "RCT13 - 26 weeks", "RCT<=12 weeks", "Prospective cohort>26 weeks"
+RCT_lessthan12weeks <- all_infection_and_moderators[all_infection_and_moderators$groups == "RCT<=12 weeks",]
+RCT_lessthan12weeks_3cols <- RCT_lessthan12weeks[2:4]
+class(RCT_lessthan12weeks_3cols[,3]) <-"numeric"
+```
+
+
+```{r Cast the data into wide format}
+df.long <- dcast(RCT_lessthan12weeks_3cols, rows~moderator_name, fun.aggregate=mean)
+df.long
+```
+
+
+```{r meta-regression for the selected study design and follow-up length group}
+inf_temp <- NULL
+columns <- NULL
+rows <- NULL
+groups <- NULL# combination of followup length and study design
+moderator_name <- NULL
+for (j in unique(all_inf_df$design_followup)){ 
+for (i in 62:154){
+  for( l in moderators){
+  temp_df = all_inf_df[!is.na(all_inf_df[,i]),]
+  temp_df = temp_df[temp_df$design_followup==j,]
+  temp_df$p_temp <- temp_df[,i]/temp_df$n
+  temp_df = temp_df[temp_df$p_temp <=1 & temp_df$p_temp >=0,]
+  temp_df$temp_moderator <- unlist(temp_df[l])
+
+  if( sum(complete.cases(temp_df[,i]))<12){next}
+  if(sum(!is.na(temp_df$temp_moderator))<10){next}
+  
+  if(is.character(temp_df[,i]) & length(unique(temp_df[,i])) > 3){next}
+  
+temp.logit = escalc(xi=unlist(temp_df[,i]), ni=n, measure="PLO", data=temp_df)
+temp.rma = rma(yi,vi,data=temp.logit, mods=~temp_moderator, method="DL", weighted=TRUE)
+temp.prop.pre = predict(temp.rma,transf=transf.ilogit)
+
+groups <- append(groups, j)
+rows <- append(rows, colnames(temp_df)[i])
+inf_temp <- rbind(inf_temp, round(temp.rma$QMp,4))
+moderator_name <- append(moderator_name, l)
+}}}
+```
+
+
+```{r}
+all_infection_and_moderators <- data.frame(cbind(groups, rows, moderator_name, inf_temp))
+#write_xlsx(all_infection_and_moderators,"all_infection_and_moderators_2.xlsx")
+```
+
+
+
+```{r exporting the data}
+write_xlsx(df.long,"RCT_lessthan12weeks_all_infection.xlsx")
+#write.csv(df.long,"RCT_less13to26weeksxx.csv")
+```
+

@@ -1,0 +1,356 @@
+---
+title: "meta-regression stratified"
+author: "Biniyam Gebeyehu"
+date: "1/10/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+library(ggrepel)
+library(writexl)
+library(metafor)
+library(meta)
+```
+
+
+
+```{r reading dataset}
+Infection_df <- read_excel("database_trials_totaal_14nov_2021.xlsx")
+
+```
+
+```{r changing column names}
+setnames(Infection_df, "Patients_n...21", "n")
+setnames(Infection_df, "Infections_total_n_patients", "total_infection")
+setnames(Infection_df, "SIE_n_patients", "severe_infection")
+```
+
+#Grouping follow-up length into three <=12 weeks, 13 - 26 weeks, and >26 weeks 
+```{r recoding follow-up weeks}
+#Grouping follow-up week
+followup.length.group <- NULL
+for ( i in seq(1,dim(Infection_df)[1], by=1)){
+  if(Infection_df$Follow_up_duration_weeks[i] <= 12){followup.length.group <- append(followup.length.group, "<=12 weeks" )}
+  
+  if(Infection_df$Follow_up_duration_weeks[i] > 12 & Infection_df$Follow_up_duration_weeks[i] <= 26) {followup.length.group <- append(followup.length.group,  "13 - 26 weeks")}
+  
+  if(Infection_df$Follow_up_duration_weeks[i] > 26 & Infection_df$Follow_up_duration_weeks[i] != 999){followup.length.group <- append(followup.length.group,">26 weeks")}
+  
+  if(Infection_df$Follow_up_duration_weeks[i] == 999){followup.length.group <- append(followup.length.group,"NaN")}
+}
+```
+
+```{r adding follow-up group to the dataframe}
+#adding grouped follow up length to the existing data frame
+Infection_df$followup.length.group <- followup.length.group
+```
+
+
+```{r combinig follow-up period and study design }
+design_followup <- paste0(Infection_df$Design, Infection_df$followup.length.group)
+Infection_df$design_followup <- design_followup
+```
+
+
+#Overall infection
+```{r removing rows with missing proportion - overall proportion}
+#In the dataset 999 was put to indicate missing values in overall infection and severe infection 
+Infection_df_overall <- copy(Infection_df)
+Infection_df_overall$P <- Infection_df_overall$total_infection/Infection_df_overall$n
+Infection_df_overall <- Infection_df_overall[!is.na(Infection_df_overall$P) & (Infection_df_overall$P  < 1) ,]
+Infection_df_overall <- Infection_df_overall[Infection_df_overall$total_infection != 999,]
+
+```
+
+```{r overall infection meta-regression for each combination of study design and follow-up length group}
+store_summary <- NULL
+design.followup <- NULL
+study.designs <- c("RCT", "Retrospective cohort", "Prospective cohort", "Registry", "RCT+OLE", "Open label trial")
+followup.length.groups <- c("<=12 weeks", "13 - 26 weeks", ">26 weeks")
+for (i in study.designs){
+  for (j in followup.length.groups){
+    data.temp <- Infection_df_overall[(Infection_df_overall$Design==i & Infection_df_overall$followup.length.group==j), ]
+    if(dim(data.temp)[1] >2){
+    logit.temp <- escalc(xi=total_infection, ni=n, measure="PLO", data=data.temp)
+    rma.temp <- rma(yi,vi,data=logit.temp, method="REML", weighted=TRUE)
+    rma.temp.pred <- predict(rma.temp, transf = transf.ilogit)
+    design.followup <- append(design.followup, paste0(i,j))
+    store_summary <- rbind(store_summary, round(c(rma.temp.pred$pred, rma.temp.pred$ci.lb, rma.temp.pred$ci.ub, rma.temp$k,rma.temp$tau2, rma.temp$se.tau2, rma.temp$QEp, rma.temp$I2), 4))}
+  }}
+
+```
+
+```{r}
+#addind column name for the summary by study design and followup period
+store_summary <- as.data.frame(store_summary)
+store_summary$design.followup <- design.followup
+colnames(store_summary) <- t(c("design_followup","P","CI_L","CI_U","k","tau2","tau2_se","Het","I2"))
+
+```
+
+
+#Severe infection
+```{r removing rows with missing proportion - overall proportion}
+#missing values in the serious infection are represented by 999 
+Infection_df.severe <- copy(Infection_df)
+Infection_df.severe$P_severe <- Infection_df.severe$severe_infection/Infection_df.severe$n
+Infection_df.complete.severe <- Infection_df.severe[!is.na(Infection_df.severe$P_severe) & (Infection_df.severe$P_severe  < 1),]
+ Infection_df.complete.severe <- Infection_df.complete.severe[as.integer(Infection_df.complete.severe$severe_infection) != 999,]
+```
+
+```{r severe infection meta-regression for each combination of study design and follow-up length group}
+store_summary_severe <- NULL
+design.followup <- NULL
+study.designs <- c("RCT", "Retrospective cohort", "Prospective cohort", "Registry", "RCT+OLE", "Open label trial")
+followup.length.groups <- c("<=12 weeks", "13 - 26 weeks", ">26 weeks")
+for (i in study.designs){
+  for (j in followup.length.groups){
+    data.temp <- Infection_df.complete.severe[(Infection_df.complete.severe$Design==i & Infection_df.complete.severe$followup.length.group==j), ]
+    if(dim(data.temp)[1] >2){
+    logit.temp <- escalc(xi=severe_infection, ni=n, measure="PLO", data=data.temp)
+    rma.temp <- rma(yi,vi,data=logit.temp, method="REML", weighted=TRUE)
+    rma.temp.pred <- predict(rma.temp, transf = transf.ilogit)
+    design.followup <- append(design.followup, paste0(i,j))
+    store_summary_severe <- rbind(store_summary_severe, round(c(rma.temp.pred$pred, rma.temp.pred$ci.lb, rma.temp.pred$ci.ub, rma.temp$k,rma.temp$tau2, rma.temp$se.tau2, rma.temp$QEp, rma.temp$I2), 4))}
+  }}
+
+```
+
+```{r adding column names}
+#addind column name for the summary by study design and followup period
+store_summary_severe <- as.data.frame(store_summary_severe)
+store_summary_severe$design.followup <- design.followup
+colnames(store_summary_severe) <- t(c("design_followup","P","CI_L","CI_U","k","tau2","tau2_se","Het","I2"))
+
+```
+
+
+
+
+```{r}
+logit.temp <- escalc(xi=severe_infection, ni=n, measure="PLO", data=data.complete)
+rma.temp <- rma(yi,vi,data=logit.temp, method="REML", weighted=TRUE)
+rma.temp.pred <- predict(rma.temp, transf=transf.ilogit)
+
+
+
+```
+
+
+#Checking outliers
+
+
+```{r Identifying outliers with residuals}
+overall.outliers.logit <- escalc(xi= total_infection, ni=n, measure="PR", data=Infection_df_overall) 
+overall.ouotliers.rma <- rma(yi, vi, data=overall.outliers.logit, method="DL", weighted=TRUE)
+stud.res=rstudent(overall.ouotliers.rma)
+abs.z=abs(stud.res$z)
+stud.res[order(-abs.z)]
+```
+
+```{r preparing residuals for visualization}
+abs.z_df <- data.frame(abs.z)
+colnames(abs.z_df) <- "abs.z"
+abs.z_df$id <- 1:length(abs.z)
+```
+
+```{r preparing texts to display them with abs.z values}
+outliers_overall_text <- NULL
+
+for(i in 1:length(Infection_df_overall$Design)){
+  if(abs.z_df$abs.z[i]>2 & Infection_df_overall$followup.length.group[i] == "NaN"){
+    outliers_overall_text <- append(outliers_overall_text, paste0("(", Infection_df_overall$PMID[i],",", " ",Infection_df_overall$Design[i],")" ))
+  }
+  else if(abs.z_df$abs.z[i]>2 & Infection_df_overall$followup.length.group[i] != "NaN"){outliers_overall_text <- append(outliers_overall_text, paste0("(", Infection_df_overall$PMID[i],",", " ",Infection_df_overall$Design[i], ",", " ",Infection_df_overall$followup.length.group[i],")" ))}
+  
+  else if(abs.z_df$abs.z[i]<=2 ) {outliers_overall_text <- append(outliers_overall_text, "" )}  
+}
+```
+
+
+```{r}
+#adding outliers_overall_text to the abs.z_df (for visualization)
+abs.z_df$outliers_overall_text <- outliers_overall_text
+```
+
+
+```{r making plot of absolute value of residuals}
+#Visualizing the z values vs index
+#we also included (PMID, study design, followup length) information for z values > 2
+ggplot(abs.z_df, aes(x = id, y=abs.z, label =outliers_overall_text)) + geom_point(shape=18, size=4) + xlab("Index") + ylab("Z-value") +geom_text_repel(
+    data = subset(abs.z_df),
+    aes(label = outliers_overall_text),
+    size = 3.5,
+    box.padding = unit(0.35, "lines"),
+    point.padding = unit(0.3, "lines")
+  )+ theme(
+  axis.title.x = element_text(size = 12),
+  axis.title.y = element_text(size = 12)
+)
+
+```
+
+
+```{r storing baujat information for baujat plot } 
+baujat_df <- data.frame(baujat(overall.ouotliers.rma))
+```
+
+
+```{r combining  PMID, study design, and follow-up length to display with baujat plot}
+baujat_overall_text <- NULL
+for(i in 1:length(Infection_df_overall$Design)){
+  if(baujat_df$x[i]>3.8 & Infection_df_overall$followup.length.group[i] == "NaN"){
+    baujat_overall_text <- append(baujat_overall_text, paste0("(", Infection_df_overall$PMID[i],",", " ",Infection_df_overall$Design[i],")" ))
+  }
+  
+  else if(baujat_df$x[i]>3.8 & Infection_df_overall$followup.length.group[i] != "NaN"){baujat_overall_text <- append(baujat_overall_text, paste0("(", Infection_df_overall$PMID[i],",", " ",Infection_df_overall$Design[i], ",", " ",Infection_df_overall$followup.length.group[i],")" ))}
+  
+  else if(baujat_df$x[i]<=3.8 ) {baujat_overall_text <- append(baujat_overall_text, "" )}  
+}
+```
+
+
+```{r displaying PMID, study design, followup length with baujat plot}
+baujat_df$baujat_overall_text <- baujat_overall_text
+
+png("baujat_plot.png",width=700,height=500)
+ggplot(baujat_df, aes(x = x, y=y, label =baujat_overall_text)) + geom_point(shape=18, size=4) +ylab("Influence on Overall Result") + xlab("Squared Pearson Residual")+ geom_text_repel(
+    data = baujat_df,
+    aes(label = baujat_overall_text),
+    size = 4.5,
+    box.padding = unit(0.35, "lines"),
+    point.padding = unit(0.3, "lines")
+  )+ theme(
+  axis.text.x = element_text(color = "grey20", size = 16),
+  axis.text.y = element_text(color = "grey20", size = 16),
+  #axis.title.x = element_text(size = 14),
+  #axis.title.y = element_text(size = 14),
+  panel.background = element_blank(),
+    text = element_text(size = 16),
+    panel.grid.major.x = element_line(color = "grey80"),
+      panel.grid.major.y = element_line(color = "grey80")
+  #axis.ticks.length=unit(.25, "cm")
+)
+dev.off()
+
+
+```
+
+
+# Meta-regression (univariate)
+
+```{r computing sex ratio}
+#Computing the sex ratio
+Male_n = Infection_df_overall$Males_n
+Female_n = Infection_df_overall$Females_n
+sex_ratio <- (Male_n/Female_n)*100
+```
+
+```{r}
+# Including sex ratio to the dataframe
+Infection_df_overall$sex_ratio <- sex_ratio
+```
+
+
+```{r list of potential moderators moderators}
+vars_list <- c("n","total_infection","severe_infection", "Follow_up_duration_weeks","Design", "design_followup", "Biological_class", "Biological_target", "Pneumonia_patients", "URT_infections_patients",  "Nasopharyngitis_patients",  "LRT_infection_patients", "sex_ratio", "Age_mean","BMI_kg_m2_mean", "Caucasian_pct", "RA_duration_mean_yrs", "CRP_mg_L_mean", "Rheumatoid_factor_positive_pct", "MTX_pct", "MTX_dose_mg_week_mean", "Corticosteroids_pct", "Cort_dose_mg_day_mean", "No_of_prior_DMARDS_mean", "previous_bDMARD_use_pct")
+```
+
+#Meta-regression for RCT woth follow-up 12 weeks or less
+```{r subset data for RCT woth follow-up 12 weeks or less}
+Moderators_df <- Infection_df_overall[,vars_list]
+RCT_lessOR12weeks <- Moderators_df[Moderators_df$design_followup =="RCT<=12 weeks",] 
+```
+
+
+
+```{r}
+#fiting a meta-regression model -- overall infection <= 12 weeks
+RCT_lessOR12weeks_estimates <- NULL
+columns <- NULL
+for (i in 11:dim(RCT_lessOR12weeks)[2]){
+  temp_df = RCT_lessOR12weeks[!is.na(RCT_lessOR12weeks$total_infection),]
+  temp_df = RCT_lessOR12weeks[!is.na(RCT_lessOR12weeks$n),]
+temp.logit = escalc(xi=total_infection, ni=n, measure="PLO", data=temp_df)
+temp.rma = rma(yi,vi,data=temp.logit, mods=~temp.logit[,i],  method="DL", weighted=TRUE)
+temp.prop.pre = predict(temp.rma,transf=transf.ilogit)
+
+columns <- append(columns, colnames(temp_df)[i])
+RCT_lessOR12weeks_estimates <- rbind(RCT_lessOR12weeks_estimates, round(c(temp.rma$b[1], temp.rma$se[1], temp.rma$b[2], temp.rma$se[2], temp.rma$R2, temp.rma$QEp, temp.rma$k, temp.rma$pval[1], temp.rma$pval[2], temp.rma$tau2, temp.rma$se.tau2, temp.rma$I2 ),4))
+}
+```
+
+```{r adding columns and saving the result of meta-regression}
+colnames(RCT_lessOR12weeks_estimates)<- c("bo", "bo_se", "b1", "b1_se", "R2", "Het-test", "k" ,"bo-pval","b1-pval", "tau2", "se.tau2", "I2")
+RCT_lessOR12weeks_estimates <- as.data.frame(RCT_lessOR12weeks_estimates)
+RCT_lessOR12weeks_estimates$moderators <- columns
+write_xlsx(RCT_lessOR12weeks_estimates,"RCT_lessOR12weeks.xlsx")
+```
+
+
+```{r meta-regression only ising biological class}
+#For follow up less or equal to 12 weeks
+RCT_biological.logit = escalc(xi=total_infection, ni=n, measure="PLO", data=RCT_lessOR12weeks )
+RCT_biological.rma = rma(yi,vi,data=RCT_biological.logit, mods=~Biological_class,  method="DL", weighted=TRUE)
+RCT_biological.pre = predict(temp.rma,transf=transf.ilogit)
+```
+
+
+# Meta-regression for severe infection RCT <12 weeks 
+
+```{r}
+#fiting a meta-regression model -- severe infection <= 12 weeks
+RCT_lessOR12weeks_severe <- NULL
+columns <- NULL
+for (i in 11:dim(RCT_lessOR12weeks)[2]){
+  temp_df <- RCT_lessOR12weeks[RCT_lessOR12weeks$severe_infection !=999,]
+  temp_df$p_severe <- temp_df$severe_infection/temp_df$n
+  temp_df <- temp_df[between(temp_df$p_severe,0,1),]
+temp.logit = escalc(xi=severe_infection, ni=n, measure="PLO", data=temp_df)
+temp.rma = rma(yi,vi,data=temp.logit, mods=~temp.logit[,i],  method="DL", weighted=TRUE)
+temp.prop.pre = predict(temp.rma,transf=transf.ilogit)
+
+columns <- append(columns, colnames(temp_df)[i])
+RCT_lessOR12weeks_severe <- rbind(RCT_lessOR12weeks_severe, round(c(temp.rma$b[1], temp.rma$se[1], temp.rma$b[2], temp.rma$se[2], temp.rma$R2, temp.rma$QEp, temp.rma$k, temp.rma$pval[1], temp.rma$pval[2], temp.rma$tau2, temp.rma$se.tau2, temp.rma$I2 ),4))
+}
+```
+
+```{r adding columns and saving the result of meta-regression}
+colnames(RCT_lessOR12weeks_severe)<- c("bo", "bo_se", "b1", "b1_se", "R2", "Het-test", "k" ,"bo-pval","b1-pval", "tau2", "se.tau2", "I2")
+RCT_lessOR12weeks_severe <- as.data.frame(RCT_lessOR12weeks_severe)
+RCT_lessOR12weeks_severe$moderators <- columns
+write_xlsx(RCT_lessOR12weeks_severe,"RCT_lessOR12weeks_severe.xlsx")
+```
+
+
+```{r meta-regression only ising biological class severe infection}
+#For follow up less or equal to 12 weeks
+RCT_biological.severe.logit = escalc(xi=total_infection, ni=n, measure="PLO", data=RCT_lessOR12weeks )
+RCT_biological.severe.rma = rma(yi,vi,data=RCT_biological.severe.logit, mods=~Biological_class,  method="DL", weighted=TRUE)
+RCT_biological.pre = predict(temp.rma,transf=transf.ilogit)
+```
+
+
+
+
+```{r computing proportion by study design and follow-up group}
+design_followup <- paste0(data.complete$Design, data.complete$followup.length.group)
+data.complete$design_followup <- design_followup
+
+all_combs<- c("RCT>26 weeks",  "RCT13 - 26 weeks", "Retrospective cohort>26 weeks", "Prospective cohortNaN", "Prospective cohort>26 weeks", "RCT<=12 weeks", "RCT+OLE13 - 26 weeks",  "Open label trial>26 weeks","Retrospective cohortNaN", "Retrospective cohort13 - 26 weeks", "RegistryNaN", "Open label trial13 - 26 weeks", "Prospective cohort13 - 26 weeks",   "RCT+OLE>26 weeks", "RCT+OLENaN") 
+
+dims<-NULL
+uni <- NULL
+for(i in all_combs){
+  df <- data.complete[data.complete$design_followup == i,]
+  uni <- append(uni, i)
+  dims <- append(dims, dim(df)[1])
+}
+
+```
